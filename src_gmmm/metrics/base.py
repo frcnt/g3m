@@ -12,7 +12,8 @@ def discrete_histogram(
     counter = Counter(values)
     histogram = np.zeros(max(encoder.values()) + 1)
     for key in counter:
-        histogram[encoder[key]] = counter[key]
+        if key in encoder:
+            histogram[encoder[key]] = counter[key]
 
     if norm:
         histogram /= np.sum(histogram)

@@ -228,7 +228,7 @@ def check_stability(
     num_atoms = len(atoms)
     atom_stable = 0
     for symbol_i, nr_bonds_i in zip(atoms.symbols, bond_order_per_atom):
-        possible_bonds = ALLOWED_BONDS[symbol_i]
+        possible_bonds = ALLOWED_BONDS.get(symbol_i, [])
         if type(possible_bonds) == int:
             is_stable = possible_bonds == nr_bonds_i
         else:

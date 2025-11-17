@@ -28,7 +28,7 @@ def build_sample_dataset(infos_path: str, n_samples: int):
     sample_dataset = SampleDataset(
         empirical_distribution=empirical_distribution,
         n_samples=n_samples,
-        transform=FullyConnected(key="edge_index"),
+        transform=FullyConnected(key="edge_node_index"),
     )
 
     loader = DataLoader(
