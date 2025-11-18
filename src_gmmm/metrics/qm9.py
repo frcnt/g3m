@@ -53,12 +53,16 @@ class QM9Metrics(Metrics):
         if isinstance(atoms, ase.Atoms):
             atoms = [atoms]
 
-        for a in atoms:
-            raw_mol, bond_order_per_atom = make_mol_rdkit_qm9(a)
-            mol, smi, v, c = check_validity(raw_mol)
-            molecule_stable, atom_stable, n_atoms = check_stability(
-                a, bond_order_per_atom
-            )
+        for atoms_i in atoms:
+            if "X" not in atoms_i.symbols:
+                raw_mol, bond_order_per_atom = make_mol_rdkit_qm9(atoms_i)
+                mol, smi, v, c = check_validity(raw_mol)
+                molecule_stable, atom_stable, n_atoms = check_stability(
+                    atoms_i, bond_order_per_atom
+                )
+            else:
+                mol, smi, v, c = None, None, 0, 0
+                molecule_stable, atom_stable, n_atoms = 0, 0, len(atoms_i)
 
             self.smiles.append(smi)
             self.valid.append(v)
@@ -66,7 +70,9 @@ class QM9Metrics(Metrics):
             self.n_atoms.append(n_atoms)
             self.molecule_stable.append(molecule_stable)
             self.atom_stable.append(atom_stable)
-            self.atom_hist.append(discrete_histogram(a.symbols, encoder=self.encoder))
+            self.atom_hist.append(
+                discrete_histogram(atoms_i.symbols, encoder=self.encoder)
+            )
 
     def summarize(self) -> dict:
         assert len(self.valid) == len(self.valid_connected)

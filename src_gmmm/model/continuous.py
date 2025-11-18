@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from ..model.distributions import DistributionGaussian
+from ..nn.layers import AnalogBitsEmbedding, CDCDEmbedding
 
 
 class SDE(ABC, nn.Module):
@@ -68,19 +69,38 @@ class LinearLogSNRVPSDE(SDE):
         return loc, scale
 
 
-class ContinuousDiffusion(nn.Module):
+class KarrasSDE(SDE):
+    def __init__(
+        self,
+    ):
+        super().__init__()
+
+    def diffusion(self, t: torch.Tensor):
+        return torch.sqrt(self.beta(t))
+
+    def forward_drift(
+        self,
+        t: torch.Tensor,
+        zt: torch.Tensor,
+    ):
+        return -0.5 * self.beta(t) * zt
+
+    def loc_scale(self, t: torch.Tensor):
+        loc = 1.0
+        scale = t
+
+        return loc, scale
+
+
+class BaseDiffusion(ABC, nn.Module):
     def __init__(
         self,
         sde: SDE,
-        parameterization: Literal["eps", "x0"],
         distribution: DistributionGaussian,
-        clamp_pred_in_reverse: Optional[Tuple[float, float]] = None,
     ):
-        super(ContinuousDiffusion, self).__init__()
+        super().__init__()
         self.sde = sde
-        self.parameterization = parameterization
         self.distribution = distribution
-        self.clamp_pred_in_reverse = clamp_pred_in_reverse
 
     def loss_diffusion(
         self,
@@ -89,10 +109,11 @@ class ContinuousDiffusion(nn.Module):
         t: torch.Tensor,
         *args: Optional[Any],
     ):
-        assert pred.shape == target.shape
-        return F.mse_loss(pred, target)
+        raise NotImplementedError
 
-    def training_targets(self, t: torch.Tensor, x: torch.Tensor, index: torch.Tensor):
+    def training_targets(
+        self, t: torch.Tensor, x: torch.Tensor, index: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         a, b = self.sde.loc_scale(t)
         eps = self.distribution.sample(index)
 
@@ -107,33 +128,12 @@ class ContinuousDiffusion(nn.Module):
 
         return x_t, target
 
-    @torch.inference_mode()
-    def reverse_step(
+    def construct_score(
         self,
         t: torch.Tensor,
         x_t: torch.Tensor,
         pred: torch.Tensor,
-        dt: torch.Tensor,
-        index: Optional[torch.Tensor] = None,
-        **_,
     ):
-
-        if self.clamp_pred_in_reverse:
-            assert self.parameterization == "x0"
-            pred = torch.clamp(pred, *self.clamp_pred_in_reverse)
-
-        score = self.construct_score(t=t, x_t=x_t, pred=pred)
-
-        drift_dt = self.sde.reverse_drift(t=t, zt=x_t, score=score) * dt
-        diff_dt = (
-            self.sde.diffusion(t)
-            * self.distribution.sample(index)
-            * torch.sqrt(torch.abs(dt))
-        )
-
-        return x_t + drift_dt + diff_dt
-
-    def construct_score(self, t: torch.Tensor, x_t: torch.Tensor, pred: torch.Tensor):
 
         loc, scale = self.sde.loc_scale(t)
 
@@ -147,5 +147,133 @@ class ContinuousDiffusion(nn.Module):
         return score
 
     @torch.inference_mode()
+    def reverse_step(
+        self,
+        t: torch.Tensor,
+        x_t: torch.Tensor,
+        pred: torch.Tensor,
+        dt: torch.Tensor,
+        index: Optional[torch.Tensor] = None,
+        **_,
+    ):
+
+        score = self.construct_score(t=t, x_t=x_t, pred=pred)
+
+        drift_dt = self.sde.reverse_drift(t=t, zt=x_t, score=score) * dt
+        diff_dt = (
+            self.sde.diffusion(t)
+            * self.distribution.sample(index)
+            * torch.sqrt(torch.abs(dt))
+        )
+
+        return x_t + drift_dt + diff_dt
+
+    @torch.inference_mode()
     def sample_prior(self, index: torch.Tensor):
         return self.distribution.sample(index)
+
+
+class ContinuousDiffusion(BaseDiffusion):
+    def __init__(
+        self,
+        sde: SDE,
+        parameterization: Literal["eps", "x0"],
+        distribution: DistributionGaussian,
+    ):
+        super(ContinuousDiffusion, self).__init__(sde=sde, distribution=distribution)
+        self.parameterization = parameterization
+
+    def loss_diffusion(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        t: torch.Tensor,
+        *args: Optional[Any],
+    ):
+        assert pred.shape == target.shape
+        return F.mse_loss(pred, target)
+
+
+class CategoricalDataContinuousDiffusion(BaseDiffusion):
+    def __init__(
+        self,
+        sde: SDE,
+        embedding: CDCDEmbedding,
+        distribution: Optional[DistributionGaussian] = None,
+    ):
+        if distribution is None:
+            distribution = DistributionGaussian(
+                dim=embedding.embedding_dim, zero_cog=False
+            )
+        super().__init__(sde=sde, distribution=distribution)
+        self.embedding = embedding
+
+    def loss_diffusion(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        t: torch.Tensor,
+        *args: Optional[Any],
+    ):
+        return F.cross_entropy(pred, target)  # logits
+
+    def training_targets(self, t: torch.Tensor, x: torch.Tensor, index: torch.Tensor):
+        x_t, _ = super().training_targets(t=t, x=self.embedding.forward(x), index=index)
+        return x_t, x
+
+    def construct_score(self, t: torch.Tensor, x_t: torch.Tensor, pred: torch.Tensor):
+
+        pred = self.embedding.expected_embedding(pred)
+        return super().construct_score(t, x_t, pred)
+
+    @property
+    def parameterization(self):
+        return "x0"
+
+
+class AnalogBitsContinuousDiffusion(BaseDiffusion):
+
+    def __init__(
+        self,
+        sde: SDE,
+        embedding: AnalogBitsEmbedding,
+        distribution: Optional[DistributionGaussian] = None,
+        clamp_pred_in_reverse: Optional[Tuple[float, float]] = None,
+    ):
+        if distribution is None:
+            distribution = DistributionGaussian(
+                dim=embedding.embedding_dim, zero_cog=False
+            )
+        super().__init__(sde=sde, distribution=distribution)
+        self.embedding = embedding
+        self.clamp_pred_in_reverse = clamp_pred_in_reverse
+
+    def loss_diffusion(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        t: torch.Tensor,
+        *args: Optional[Any],
+    ):
+        return F.mse_loss(pred, target)  # logits
+
+    def training_targets(self, t: torch.Tensor, x: torch.Tensor, index: torch.Tensor):
+        x_t, x_bits = super().training_targets(
+            t=t, x=self.embedding.forward(x), index=index
+        )
+        return x_t, x_bits  # return bit version as target
+
+    def construct_score(
+        self,
+        t: torch.Tensor,
+        x_t: torch.Tensor,
+        pred: torch.Tensor,
+    ):
+        if self.clamp_pred_in_reverse:
+            assert self.parameterization == "x0"
+            pred = torch.clamp(pred, *self.clamp_pred_in_reverse)
+        return super().construct_score(t=t, x_t=x_t, pred=pred)
+
+    @property
+    def parameterization(self):
+        return "x0"

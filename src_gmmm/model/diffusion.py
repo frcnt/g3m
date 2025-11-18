@@ -4,16 +4,26 @@ import torch
 import torch.nn as nn
 from torch_geometric.data import Batch, Data
 
-from ..model.continuous import ContinuousDiffusion
+from .continuous import AnalogBitsContinuousDiffusion
+from ..model.continuous import CategoricalDataContinuousDiffusion, ContinuousDiffusion
+from ..model.discrete import MaskingDiffusion
 from ..model.score import EquivariantParameterization
 
 
 class EquivariantDiffusion(nn.Module):
+
     def __init__(
         self,
         parameterization: EquivariantParameterization,
         diffusion_pos: Optional[ContinuousDiffusion],
-        diffusion_h: Optional[ContinuousDiffusion],
+        diffusion_h: Optional[
+            Union[
+                ContinuousDiffusion,
+                CategoricalDataContinuousDiffusion,
+                MaskingDiffusion,
+                AnalogBitsContinuousDiffusion,
+            ]
+        ],
     ):
         super().__init__()
 
@@ -89,8 +99,7 @@ class EquivariantDiffusion(nn.Module):
             assert batch.h is not None
             h = batch.h
         else:
-            num_nodes = len(index)
-            h = self.diffusions["h"].sample_prior(n=num_nodes)
+            h = self.diffusions["h"].sample_prior(index)
 
         return pos, h
 
@@ -142,10 +151,13 @@ class EquivariantDiffusion(nn.Module):
                 traj["pos"].append(pos_t)
                 traj["h"].append(h_t)
 
-        samples = {
-            "pos": pos_t,
-            "h": h_t,
-        }
+        samples = self.final_step(
+            t=t + dt,
+            pos_t=pos_t,
+            h_t=h_t,
+            node_index=node_index,
+            edge_node_index=edge_node_index,
+        )
 
         if return_traj:
             return samples, traj
@@ -184,10 +196,43 @@ class EquivariantDiffusion(nn.Module):
 
         return pos_t, h_t
 
+    def final_step(
+        self,
+        t: torch.Tensor,
+        pos_t: torch.Tensor,
+        h_t: torch.Tensor,
+        node_index: torch.Tensor,
+        edge_node_index: torch.Tensor,
+    ):
+
+        if self.diffusion_h:  # FIXME: implement this in more generic fashion
+            if isinstance(self.diffusion_h, CategoricalDataContinuousDiffusion):
+                preds = self.parameterization.forward(
+                    t=t,
+                    pos=pos_t,
+                    h=h_t,
+                    node_index=node_index,
+                    edge_node_index=edge_node_index,
+                )
+                h_t = preds["h"].argmax(dim=-1)
+            elif isinstance(self.diffusion_h, AnalogBitsContinuousDiffusion):
+                h_t = self.diffusion_h.embedding.bit2int(h_t)
+
+        return dict(pos=pos_t, h=h_t)
+
     @property
     def diffusion_pos(self) -> Optional[ContinuousDiffusion]:
         return self.diffusions["pos"]
 
     @property
-    def diffusion_h(self) -> Optional[ContinuousDiffusion]:
+    def diffusion_h(
+        self,
+    ) -> Optional[
+        Union[
+            ContinuousDiffusion,
+            CategoricalDataContinuousDiffusion,
+            MaskingDiffusion,
+            AnalogBitsContinuousDiffusion,
+        ]
+    ]:
         return self.diffusions["h"]

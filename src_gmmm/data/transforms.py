@@ -9,6 +9,7 @@ from ..utils.ops import center
 
 @functional_transform("one_hot")
 class OneHot(BaseTransform):
+
     def __init__(
         self,
         values: list[int],
@@ -16,22 +17,25 @@ class OneHot(BaseTransform):
         scale: float = 1.0,
         noise_std: float = 0.0,
         dtype: torch.dtype = torch.get_default_dtype(),
+        expand_as_vector: bool = True,
     ) -> None:
         self.mapping = {v: i for (i, v) in enumerate(values)}
         self.key = key
         self.dtype = dtype
         self.noise_std = noise_std
         self.scale = scale
+        self.expand_as_vector = expand_as_vector
 
     def forward(self, data: Data) -> Data:
         data_key = getattr(data, self.key)
         assert data_key.ndim == 1
 
         x = torch.as_tensor([self.mapping[xi.item()] for xi in data_key])
-        x = self.scale * one_hot(x, num_classes=len(self.mapping)).to(self.dtype)
+        if self.expand_as_vector:
+            x = self.scale * one_hot(x, num_classes=len(self.mapping)).to(self.dtype)
 
-        if self.noise_std > 0.0:
-            x = x + torch.randn_like(x) * self.noise_std
+            if self.noise_std > 0.0:
+                x = x + torch.randn_like(x) * self.noise_std
 
         setattr(data, self.key, x)
 

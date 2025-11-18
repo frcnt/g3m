@@ -41,7 +41,10 @@ def atoms_from_tensors(
 
     for start_idx, end_idx in zip(ptr[:-1], ptr[1:]):
         positions = pos[start_idx:end_idx, :]
-        symbols = [decoder[idx.item()] for idx in h[start_idx:end_idx]]
+        symbols = [
+            decoder[i] if (i := idx.item()) < len(decoder) else "X"
+            for idx in h[start_idx:end_idx]
+        ]
         atoms = ase.Atoms(symbols=symbols, positions=positions)
         atoms_list.append(atoms)
     return atoms_list
